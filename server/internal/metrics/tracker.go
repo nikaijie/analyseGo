@@ -1,7 +1,12 @@
 package metrics
 
 import (
+	"bytes"
+	"regexp"
 	"runtime"
+	pprof "runtime/pprof"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +19,9 @@ type Sample struct {
 	HeapInuse   uint64 `json:"heapInuse"`
 	HeapSys     uint64 `json:"heapSys"`
 	HeapObjects uint64 `json:"heapObjects"`
+	BlockLock   int    `json:"blockLock"`
+	BlockIO     int    `json:"blockIO"`
+	BlockPerm   int    `json:"blockPerm"`
 }
 
 // Tracker 负责采样与“最近10秒请求数”的统计
@@ -63,6 +71,7 @@ func (t *Tracker) requestsInWindow(duration time.Duration) int {
 func (t *Tracker) CurrentSample() Sample {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
+	bl, bi, bp := classifyBlocks()
 	return Sample{
 		Time:        time.Now().UnixMilli(),
 		Goroutines:  runtime.NumGoroutine(),
@@ -71,7 +80,49 @@ func (t *Tracker) CurrentSample() Sample {
 		HeapInuse:   ms.HeapInuse,
 		HeapSys:     ms.HeapSys,
 		HeapObjects: ms.HeapObjects,
+		BlockLock:   bl,
+		BlockIO:     bi,
+		BlockPerm:   bp,
 	}
+}
+
+func classifyBlocks() (lock int, io int, perm int) {
+	var buf bytes.Buffer
+	pprof.Lookup("goroutine").WriteTo(&buf, 1)
+	lines := strings.Split(buf.String(), "\n")
+	re := regexp.MustCompile(`goroutine\s+\d+\s+\[(.*?)\]:`)
+	durRe := regexp.MustCompile(`(\d+)\s*(minute|minutes|second|seconds)`)
+	for _, line := range lines {
+		m := re.FindStringSubmatch(line)
+		if len(m) < 2 {
+			continue
+		}
+		state := strings.ToLower(m[1])
+		var durSec int
+		if dm := durRe.FindStringSubmatch(state); len(dm) >= 3 {
+			n := dm[1]
+			unit := dm[2]
+			if v, err := strconv.Atoi(n); err == nil {
+				if strings.HasPrefix(unit, "minute") {
+					durSec = v * 60
+				} else {
+					durSec = v
+				}
+			}
+		}
+		if strings.Contains(state, "semacquire") {
+			lock++
+		}
+		if strings.Contains(state, "io wait") || strings.Contains(state, "syscall") {
+			io++
+		}
+		if durSec >= 10 {
+			if strings.Contains(state, "semacquire") || strings.Contains(state, "chan receive") || strings.Contains(state, "chan send") || strings.Contains(state, "select") || strings.Contains(state, "io wait") || strings.Contains(state, "syscall") {
+				perm++
+			}
+		}
+	}
+	return
 }
 
 // PushSample 将当前样本推入历史，最多保留 600 个点
