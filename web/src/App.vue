@@ -12,7 +12,8 @@
       <div style="max-width: 900px; margin: 0 auto">
         <MetricsView v-if="tab==='metrics'" />
         <MemoryView v-else-if="tab==='memory'" />
-        <BlocksView v-else />
+        <BlocksView v-else-if="tab==='blocks'" />
+        <MetricsView v-else />
       </div>
     </el-main>
   </el-container>

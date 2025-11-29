@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"analyseGo/internal/metrics"
+	pprof "runtime/pprof"
 
 	"github.com/gin-gonic/gin"
 )
@@ -48,9 +50,18 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 	r.Use(func(c *gin.Context) {
+		route := c.FullPath()
+		if route == "" {
+			route = c.Request.URL.Path
+		}
 		tracker.AddRequest(0)
+		tracker.AddRequestRoute(route, 0)
 		hub.Notify()
-		c.Next()
+		labels := pprof.Labels("route", route)
+		pprof.Do(c.Request.Context(), labels, func(ctx context.Context) {
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
+		})
 	})
 
 	ticker := time.NewTicker(time.Second)
@@ -95,6 +106,8 @@ func main() {
 	api.GET("/metrics", func(c *gin.Context) { c.JSON(http.StatusOK, currentSample()) })
 
 	api.GET("/metrics/history", func(c *gin.Context) { c.JSON(http.StatusOK, tracker.History()) })
+
+	api.GET("/metrics/routes", func(c *gin.Context) { c.JSON(http.StatusOK, tracker.RouteStats()) })
 
 	api.GET("/metrics/stream", func(c *gin.Context) {
 		c.Writer.Header().Set("Content-Type", "text/event-stream")

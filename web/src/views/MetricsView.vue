@@ -27,12 +27,18 @@
         </g>
       </svg>
     </div>
+
+    <div style="margin-top:16px">
+      <div style="font-size:13px; color:#666; margin-bottom:8px">接口详情（最近 10 秒）</div>
+      <RoutesView />
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { API_BASE } from '../config'
+import RoutesView from './RoutesView.vue'
 
 type Sample = { time: number; goroutines: number; requests: number; heapAlloc: number; heapInuse: number; heapSys: number; heapObjects: number }
 
@@ -137,4 +143,3 @@ const chartTitle = computed(() => metric.value === 'goroutines' ? 'goroutine 数
 const btn = 'padding:6px 10px; border:1px solid #ddd; border-radius:6px; background:#fff'
 const activeBtn = 'padding:6px 10px; border:1px solid #3b82f6; color:#3b82f6; border-radius:6px; background:#eef5ff'
 </script>
-
