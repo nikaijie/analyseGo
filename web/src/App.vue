@@ -7,7 +7,7 @@
         <div style="font-size:24px; font-weight:600">{{ latest?.goroutines ?? 0 }}</div>
       </div>
       <div>
-        <div style="font-size:13px; color:#666">累计请求数</div>
+        <div style="font-size:13px; color:#666">最近 10 秒请求数</div>
         <div style="font-size:24px; font-weight:600">{{ latest?.requests ?? 0 }}</div>
       </div>
       <button @click="ping" style="padding:8px 12px; border:1px solid #ddd; border-radius:6px; background:#fff">触发 /api/ping</button>
@@ -16,7 +16,11 @@
     </div>
 
     <div style="border:1px solid #e5e5e5; border-radius:8px; padding:12px">
-      <div style="font-size:13px; color:#666; margin-bottom:8px">goroutine 数量（最近 10 分钟）</div>
+      <div style="font-size:13px; color:#666; margin-bottom:8px">{{ chartTitle }}</div>
+      <div style="display:flex; gap:8px; margin-bottom:8px">
+        <button @click="metric='requests'" :style="metric==='requests' ? activeBtn : btn">最近10秒请求数</button>
+        <button @click="metric='goroutines'" :style="metric==='goroutines' ? activeBtn : btn">goroutine 数量</button>
+      </div>
       <svg :width="width" :height="height" :viewBox="`0 0 ${width} ${height}`" style="width:100%">
         <path :d="path" stroke="#3b82f6" stroke-width="2" fill="none" />
         <g v-if="grid">
@@ -33,6 +37,7 @@ import { onMounted, onUnmounted, ref, computed } from 'vue'
 type Sample = { time: number; goroutines: number; requests: number }
 
 const samples = ref<Sample[]>([])
+const metric = ref<'goroutines'|'requests'>('requests')
 const width = 800
 const height = 300
 const maxPoints = 600
@@ -54,13 +59,15 @@ function scaleY(v: number, min: number, max: number) {
 const path = computed(() => {
   if (samples.value.length === 0) return ''
   const data = samples.value
-  const min = Math.min(...data.map(d => d.goroutines))
-  const max = Math.max(...data.map(d => d.goroutines))
+  const vals = data.map(d => metric.value === 'goroutines' ? d.goroutines : d.requests)
+  const min = Math.min(...vals)
+  const max = Math.max(...vals)
   const stepX = width / Math.max(data.length - 1, 1)
   let d = ''
   for (let i = 0; i < data.length; i++) {
     const x = i * stepX
-    const y = scaleY(data[i].goroutines, min, max)
+    const yVal = metric.value === 'goroutines' ? data[i].goroutines : data[i].requests
+    const y = scaleY(yVal, min, max)
     d += i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`
   }
   return d
@@ -127,6 +134,10 @@ onUnmounted(() => {
     reconnectTimer = null
   }
 })
+
+const chartTitle = computed(() => metric.value === 'goroutines' ? 'goroutine 数量（最近 10 分钟）' : '最近 10 秒请求数（最近 10 分钟）')
+const btn = 'padding:6px 10px; border:1px solid #ddd; border-radius:6px; background:#fff'
+const activeBtn = 'padding:6px 10px; border:1px solid #3b82f6; color:#3b82f6; border-radius:6px; background:#eef5ff'
 </script>
 
 <style>
