@@ -7,9 +7,13 @@ import (
 )
 
 type Sample struct {
-	Time       int64 `json:"time"`
-	Goroutines int   `json:"goroutines"`
-	Requests   int   `json:"requests"`
+	Time        int64  `json:"time"`
+	Goroutines  int    `json:"goroutines"`
+	Requests    int    `json:"requests"`
+	HeapAlloc   uint64 `json:"heapAlloc"`
+	HeapInuse   uint64 `json:"heapInuse"`
+	HeapSys     uint64 `json:"heapSys"`
+	HeapObjects uint64 `json:"heapObjects"`
 }
 
 // Tracker 负责采样与“最近10秒请求数”的统计
@@ -57,10 +61,16 @@ func (t *Tracker) requestsInWindow(duration time.Duration) int {
 
 // CurrentSample 返回当前采样
 func (t *Tracker) CurrentSample() Sample {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
 	return Sample{
-		Time:       time.Now().UnixMilli(),
-		Goroutines: runtime.NumGoroutine(),
-		Requests:   t.requestsInWindow(10 * time.Second),
+		Time:        time.Now().UnixMilli(),
+		Goroutines:  runtime.NumGoroutine(),
+		Requests:    t.requestsInWindow(10 * time.Second),
+		HeapAlloc:   ms.HeapAlloc,
+		HeapInuse:   ms.HeapInuse,
+		HeapSys:     ms.HeapSys,
+		HeapObjects: ms.HeapObjects,
 	}
 }
 
