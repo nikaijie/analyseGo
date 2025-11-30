@@ -1,161 +1,191 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"strconv"
 	"time"
 
+	"analyseGo/internal/blog"
+	"analyseGo/internal/ginutil"
 	"analyseGo/internal/metrics"
-	pprof "runtime/pprof"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Sample 与前端约定的数据结构，采用 metrics 包的类型
-type Sample = metrics.Sample
+const (
+	defaultPort      = ":8099"
+	defaultWindowSec = 600   // 默认10分钟
+	maxWindowSec     = 86400 // 最大24小时
+	sampleInterval   = time.Second
+)
 
 var (
 	tracker = metrics.NewTracker()
+	hub     = metrics.NewHub()
 )
 
-var hub = metrics.NewHub()
+// handlePing 健康检查
+func handlePing(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"message": "pong"})
+}
 
-func addSub() chan struct{}      { return hub.Subscribe() }
-func removeSub(ch chan struct{}) { hub.Unsubscribe(ch) }
+// handlePingSlow 模拟慢请求
+func handlePingSlow(c *gin.Context) {
+	ms := ginutil.ParseIntQuery(c, "ms", 2000)
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "pong",
+		"sleep_ms": ms,
+	})
+}
 
-func currentSample() Sample { return tracker.CurrentSample() }
+// handleBusy 生成大量 goroutine 模拟负载
+func handleBusy(c *gin.Context) {
+	n := ginutil.ParseIntQuery(c, "n", 50)
+	ms := ginutil.ParseIntQuery(c, "ms", 2000)
 
-func pushSample() { tracker.PushSample() }
+	for i := 0; i < n; i++ {
+		go func() {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}()
+	}
 
-func corsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if c.Request.Method == http.MethodOptions {
-			c.Status(http.StatusNoContent)
-			c.Abort()
+	c.JSON(http.StatusOK, gin.H{
+		"spawned":  n,
+		"sleep_ms": ms,
+	})
+}
+
+// handleMetrics 获取当前指标快照
+func handleMetrics(c *gin.Context) {
+	sample := tracker.CurrentSample()
+	c.JSON(http.StatusOK, sample)
+}
+
+// handleMetricsHistory 获取历史指标数据
+func handleMetricsHistory(c *gin.Context) {
+	windowSec := ginutil.ParseWindowSeconds(c, maxWindowSec, defaultWindowSec)
+	history := tracker.HistoryWindow(windowSec)
+	c.JSON(http.StatusOK, history)
+}
+
+// handleMetricsRoutes 获取按路由统计的指标
+func handleMetricsRoutes(c *gin.Context) {
+	stats := tracker.RouteStats()
+	c.JSON(http.StatusOK, stats)
+}
+
+// handleMetricsStream SSE 流式推送实时指标
+func handleMetricsStream(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Flush()
+
+	// 订阅通知通道
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	// 定时推送
+	ticker := time.NewTicker(sampleInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.Request.Context().Done():
 			return
+		case <-ticker.C:
+			sendSample(c, tracker.CurrentSample())
+		case <-ch:
+			// 有新请求时立即推送
+			sendSample(c, tracker.CurrentSample())
 		}
-		c.Next()
+	}
+}
+
+// sendSample 发送单个样本数据
+func sendSample(c *gin.Context, sample metrics.Sample) {
+	data, err := json.Marshal(sample)
+	if err != nil {
+		log.Printf("Failed to marshal sample: %v", err)
+		return
+	}
+	fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
+	c.Writer.Flush()
+}
+
+// startSampling 启动定时采样
+func startSampling() {
+	ticker := time.NewTicker(sampleInterval)
+	go func() {
+		for range ticker.C {
+			tracker.PushSample()
+		}
+	}()
+}
+
+// setupRoutes 设置路由
+func setupRoutes(r *gin.Engine) {
+	api := r.Group("/api")
+	{
+		// 测试接口
+		api.GET("/ping", handlePing)
+		api.GET("/ping/slow", handlePingSlow)
+		api.GET("/busy", handleBusy)
+
+		// 指标接口
+		api.GET("/metrics", handleMetrics)
+		api.GET("/metrics/history", handleMetricsHistory)
+		api.GET("/metrics/routes", handleMetricsRoutes)
+		api.GET("/metrics/stream", handleMetricsStream)
+
+		// 博客接口
+		blogAPI := api.Group("/blog")
+		{
+			// 文章
+			blogAPI.GET("/posts", blog.GetPosts)
+			blogAPI.GET("/posts/:id", blog.GetPost)
+			blogAPI.POST("/posts", blog.CreatePost)
+			blogAPI.PUT("/posts/:id", blog.UpdatePost)
+			blogAPI.DELETE("/posts/:id", blog.DeletePost)
+
+			// 分类
+			blogAPI.GET("/categories", blog.GetCategories)
+			blogAPI.POST("/categories", blog.CreateCategory)
+
+			// 标签
+			blogAPI.GET("/tags", blog.GetTags)
+			blogAPI.POST("/tags", blog.CreateTag)
+		}
 	}
 }
 
 func main() {
+	// 初始化数据库
+	if err := blog.InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	// 设置 Gin 为发布模式
 	gin.SetMode(gin.ReleaseMode)
+
+	// 创建路由
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(corsMiddleware())
-	r.Use(func(c *gin.Context) {
-		route := c.FullPath()
-		if route == "" {
-			route = c.Request.URL.Path
-		}
-		tracker.AddRequest(0)
-		tracker.AddRequestRoute(route, 0)
-		hub.Notify()
-		labels := pprof.Labels("route", route)
-		pprof.Do(c.Request.Context(), labels, func(ctx context.Context) {
-			c.Request = c.Request.WithContext(ctx)
-			c.Next()
-		})
-	})
+	r.Use(ginutil.CORSMiddleware())
+	r.Use(ginutil.TrackingMiddleware(tracker, hub))
 
-	ticker := time.NewTicker(time.Second)
-	go func() {
-		for range ticker.C {
-			pushSample()
-		}
-	}()
+	// 设置路由
+	setupRoutes(r)
 
-	api := r.Group("/api")
-	api.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": "pong"})
-	})
+	// 启动定时采样
+	startSampling()
 
-	api.GET("/ping/slow", func(c *gin.Context) {
-		msStr := c.Query("ms")
-		ms, _ := strconv.Atoi(msStr)
-		if ms <= 0 {
-			ms = 2000
-		}
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		c.JSON(http.StatusOK, gin.H{"message": "pong", "sleep_ms": ms})
-	})
-
-	api.GET("/busy", func(c *gin.Context) {
-		nStr := c.Query("n")
-		msStr := c.Query("ms")
-		n, _ := strconv.Atoi(nStr)
-		if n <= 0 {
-			n = 50
-		}
-		ms, _ := strconv.Atoi(msStr)
-		if ms <= 0 {
-			ms = 2000
-		}
-		for i := 0; i < n; i++ {
-			go func() { time.Sleep(time.Duration(ms) * time.Millisecond) }()
-		}
-		c.JSON(http.StatusOK, gin.H{"spawned": n, "sleep_ms": ms})
-	})
-
-	api.GET("/metrics", func(c *gin.Context) { c.JSON(http.StatusOK, currentSample()) })
-
-	api.GET("/metrics/history", func(c *gin.Context) {
-		wStr := c.Query("window")
-		sec, _ := strconv.Atoi(wStr)
-		if sec <= 0 {
-			mStr := c.Query("minutes")
-			if mStr != "" {
-				if m, err := strconv.Atoi(mStr); err == nil {
-					sec = m * 60
-				}
-			}
-			hStr := c.Query("hours")
-			if hStr != "" {
-				if h, err := strconv.Atoi(hStr); err == nil {
-					sec = h * 3600
-				}
-			}
-		}
-		if sec <= 0 {
-			sec = 600
-		}
-		c.JSON(http.StatusOK, tracker.HistoryWindow(sec))
-	})
-
-	api.GET("/metrics/routes", func(c *gin.Context) { c.JSON(http.StatusOK, tracker.RouteStats()) })
-
-	api.GET("/metrics/stream", func(c *gin.Context) {
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-		c.Writer.Flush()
-
-		ch := addSub()
-		defer removeSub(ch)
-
-		t := time.NewTicker(time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-c.Request.Context().Done():
-				return
-			case <-t.C:
-				b, _ := json.Marshal(currentSample())
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(b))
-				c.Writer.Flush()
-			case <-ch:
-				b, _ := json.Marshal(currentSample())
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(b))
-				c.Writer.Flush()
-			}
-		}
-	})
-
-	_ = r.Run(":8099")
+	// 启动服务器
+	log.Printf("Server starting on port %s", defaultPort)
+	if err := r.Run(defaultPort); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
