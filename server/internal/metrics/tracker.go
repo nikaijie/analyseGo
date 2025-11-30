@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const maxHistory = 86400
+
 type Sample struct {
 	Time        int64  `json:"time"`
 	Goroutines  int    `json:"goroutines"`
@@ -252,8 +254,8 @@ func (t *Tracker) PushSample() {
 	s := t.CurrentSample()
 	t.histMu.Lock()
 	t.history = append(t.history, s)
-	if len(t.history) > 600 {
-		t.history = t.history[len(t.history)-600:]
+	if len(t.history) > maxHistory {
+		t.history = t.history[len(t.history)-maxHistory:]
 	}
 	t.histMu.Unlock()
 }
@@ -265,4 +267,24 @@ func (t *Tracker) History() []Sample {
 	copy(h, t.history)
 	t.histMu.RUnlock()
 	return h
+}
+
+func (t *Tracker) HistoryWindow(seconds int) []Sample {
+	if seconds <= 0 {
+		seconds = 600
+	}
+	cutoff := time.Now().Add(-time.Duration(seconds) * time.Second).UnixMilli()
+	t.histMu.RLock()
+	h := t.history
+	idx := 0
+	for i := len(h) - 1; i >= 0; i-- {
+		if h[i].Time < cutoff {
+			idx = i + 1
+			break
+		}
+	}
+	out := make([]Sample, len(h)-idx)
+	copy(out, h[idx:])
+	t.histMu.RUnlock()
+	return out
 }

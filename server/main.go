@@ -105,7 +105,28 @@ func main() {
 
 	api.GET("/metrics", func(c *gin.Context) { c.JSON(http.StatusOK, currentSample()) })
 
-	api.GET("/metrics/history", func(c *gin.Context) { c.JSON(http.StatusOK, tracker.History()) })
+	api.GET("/metrics/history", func(c *gin.Context) {
+		wStr := c.Query("window")
+		sec, _ := strconv.Atoi(wStr)
+		if sec <= 0 {
+			mStr := c.Query("minutes")
+			if mStr != "" {
+				if m, err := strconv.Atoi(mStr); err == nil {
+					sec = m * 60
+				}
+			}
+			hStr := c.Query("hours")
+			if hStr != "" {
+				if h, err := strconv.Atoi(hStr); err == nil {
+					sec = h * 3600
+				}
+			}
+		}
+		if sec <= 0 {
+			sec = 600
+		}
+		c.JSON(http.StatusOK, tracker.HistoryWindow(sec))
+	})
 
 	api.GET("/metrics/routes", func(c *gin.Context) { c.JSON(http.StatusOK, tracker.RouteStats()) })
 
